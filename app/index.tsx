@@ -37,7 +37,7 @@ export default function WelcomeScreen() {
         />
         
         <Text style={styles.welcomeText}>Welcome To</Text>
-        <Text style={styles.brandText}>Pumpout</Text>
+        <Text style={styles.brandText}>Pumpout porco due</Text>
 
         <TouchableOpacity 
           style={styles.button} 
