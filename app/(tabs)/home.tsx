@@ -6,6 +6,20 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/Colors';
 import { supabase } from '../../lib/supabase';
 
+// --- NUOVA FUNZIONE: Trova la mezzanotte di Lunedì della settimana corrente ---
+const getStartOfCurrentWeek = () => {
+  const today = new Date();
+  const dayOfWeek = today.getDay(); // in JS: 0 è Domenica, 1 è Lunedì...
+  
+  // Se oggi è domenica (0), togliamo 6 giorni. Altrimenti togliamo dayOfWeek - 1.
+  const diff = today.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+  
+  const startOfWeek = new Date(today.setDate(diff));
+  startOfWeek.setHours(0, 0, 0, 0); // Resetta l'orario a mezzanotte spaccata
+  
+  return startOfWeek;
+};
+
 export default function HomeScreen() {
   const router = useRouter();
   const params = useLocalSearchParams(); 
@@ -78,15 +92,16 @@ export default function HomeScreen() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    // Usiamo la nostra nuova funzione invece di togliere 7 giorni!
+    const startOfWeek = getStartOfCurrentWeek();
 
     const { data } = await supabase
-      .from('workout_sessions')
+      .from('workout_sessions') // <-- Assicurati che il nome della tabella sia questo nel tuo DB
       .select('created_at')
       .eq('user_id', user.id)
-      .gte('created_at', sevenDaysAgo.toISOString());
+      .gte('created_at', startOfWeek.toISOString()); // Scarica solo dal Lunedì in poi!
 
+    // Resettiamo il grafico (stanghette piccole a 5%)
     let newChart = [
       { day: 'Mon', value: 5 }, { day: 'Tue', value: 5 }, { day: 'Wed', value: 5 },
       { day: 'Thu', value: 5 }, { day: 'Fri', value: 5 }, { day: 'Sat', value: 5 }, { day: 'Sun', value: 5 }
@@ -96,6 +111,8 @@ export default function HomeScreen() {
       data.forEach(session => {
         const date = new Date(session.created_at);
         const dayName = date.toLocaleDateString('en-US', { weekday: 'short' }); 
+        
+        // Riempiamo la stanghetta del giorno in cui ti sei allenato
         const dayIndex = newChart.findIndex(d => d.day === dayName);
         if (dayIndex !== -1) {
           newChart[dayIndex].value = 100;
