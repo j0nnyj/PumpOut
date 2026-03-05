@@ -2,22 +2,19 @@ import React, { useEffect } from 'react';
 import { View, Text, ImageBackground, StyleSheet, TouchableOpacity, Image } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Colors } from '../constants/Colors';
-import { supabase } from '../lib/supabase'; // <-- Aggiunto per parlare col database
+import { supabase } from '../lib/supabase';
+import { Ionicons } from '@expo/vector-icons'; // <-- Importiamo le icone per la freccia
 
 export default function WelcomeScreen() {
   const router = useRouter();
 
-  // --- IL CONTROLLO MAGICO ---
   useEffect(() => {
-    // Appena si apre l'app, controlliamo se c'è una "sessione" salvata
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
-        // Se sei già loggato, scavalca questa pagina e vai alla Home!
         router.replace('/home'); 
       }
     });
 
-    // Per sicurezza, se lo stato cambia mentre siamo qui, naviga in automatico
     supabase.auth.onAuthStateChange((_event, session) => {
       if (session) {
         router.replace('/home');
@@ -27,44 +24,114 @@ export default function WelcomeScreen() {
 
   return (
     <ImageBackground 
-      source={{ uri: 'https://images.unsplash.com/photo-1534438327276-14e5300c3a48?q=80&w=1000&auto=format&fit=crop' }} 
+      source={require('../assets/images/bg-welcome.jpg')} // ASSICURATI CHE IL NOME/PERCORSO SIA GIUSTO!
       style={styles.container}
+      resizeMode="cover"
     >
       <View style={styles.overlay}>
-        <Image 
-          source={{ uri: 'https://ui-avatars.com/api/?name=P&background=fff&color=000&rounded=true&size=128' }} 
-          style={styles.logo} 
-        />
         
-        <Text style={styles.welcomeText}>Welcome To</Text>
-        <Text style={styles.brandText}>Pumpout porco due</Text>
+        {/* --- BLOCCO CENTRALE (Logo e Titoli) --- */}
+        <View style={styles.centerBlock}>
+          <Image 
+            source={require('../assets/images/logo-white.png')} // ASSICURATI CHE IL NOME/PERCORSO SIA GIUSTO!
+            style={styles.logo} 
+            resizeMode="contain"
+          />
+          <Text style={styles.welcomeText}>Welcome To</Text>
+          <Text style={styles.brandText}>Pumpout</Text>
+        </View>
 
-        <TouchableOpacity 
-          style={styles.button} 
-          onPress={() => router.push('/login')}
-        >
-          <Text style={styles.buttonText}>Get Started  →</Text>
-        </TouchableOpacity>
+        {/* --- BLOCCO IN BASSO (Bottone e Login) --- */}
+        <View style={styles.bottomBlock}>
+          <TouchableOpacity 
+            style={styles.button} 
+            activeOpacity={0.8}
+            onPress={() => router.push('/login')}
+          >
+            <Text style={styles.buttonText}>Get Started</Text>
+            <Ionicons name="arrow-forward" size={26} color="#000" style={styles.arrowIcon} />
+          </TouchableOpacity>
 
-        <Text style={styles.footerText}>
-          Already have account?{' '}
-          <Text style={styles.signIn} onPress={() => router.push('/login')}>
-            Sign In
+          <Text style={styles.footerText}>
+            Already have account?{' '}
+            <Text style={styles.signIn} onPress={() => router.push('/login')}>
+              Sign In
+            </Text>
           </Text>
-        </Text>
+        </View>
+
       </View>
     </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  logo: { width: 100, height: 100, marginBottom: 40, borderRadius: 50 },
-  welcomeText: { color: 'white', fontSize: 28, fontWeight: '600' },
-  brandText: { color: 'white', fontSize: 48, fontWeight: 'bold', marginBottom: 40 },
-  button: { backgroundColor: 'white', paddingVertical: 15, paddingHorizontal: 40, borderRadius: 30, width: '80%', alignItems: 'center' },
-  buttonText: { fontSize: 18, fontWeight: 'bold' },
-  footerText: { color: 'white', marginTop: 20 },
-  signIn: { fontWeight: 'bold', textDecorationLine: 'underline' }
+  container: { 
+    flex: 1, 
+    backgroundColor: '#000' 
+  },
+  overlay: { 
+    flex: 1, 
+    backgroundColor: 'rgba(0,0,0,0.45)', // Filtro scuro come nel tuo design
+    justifyContent: 'space-between', // Spinge il blocco in basso giù e centra l'altro
+    paddingVertical: 60,
+    paddingHorizontal: 20 
+  },
+  
+  // ZONA CENTRALE
+  centerBlock: { 
+    flex: 1, 
+    justifyContent: 'center', 
+    alignItems: 'center' 
+  },
+  logo: { 
+    width: 140, 
+    height: 140, 
+    marginBottom: 10 
+  },
+  welcomeText: { 
+    color: '#FFF', 
+    fontSize: 38, 
+    fontWeight: '700', 
+    marginBottom: -5 // Stringe lo spazio tra le due scritte
+  },
+  brandText: { 
+    color: '#FFF', 
+    fontSize: 60, // Enorme come nel mockup
+    fontWeight: '900', // Il più grassetto possibile
+  },
+
+  // ZONA IN BASSO
+  bottomBlock: { 
+    alignItems: 'center', 
+    width: '100%', 
+    paddingBottom: 20 
+  },
+  button: { 
+    flexDirection: 'row', // Mette testo e freccia in linea
+    backgroundColor: '#FFF', 
+    paddingVertical: 18, 
+    borderRadius: 35, // Forma a "Pillola"
+    width: '90%', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginBottom: 30 
+  },
+  buttonText: { 
+    color: '#000', 
+    fontSize: 20, 
+    fontWeight: '800', 
+    marginRight: 10 
+  },
+  arrowIcon: { 
+    marginTop: 2 // Riallinea leggermente la freccia col testo
+  },
+  footerText: { 
+    color: '#FFF', 
+    fontSize: 16 
+  },
+  signIn: { 
+    fontWeight: 'bold', 
+    textDecorationLine: 'underline' 
+  }
 });

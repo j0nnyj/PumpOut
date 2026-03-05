@@ -128,30 +128,43 @@ export default function WorkoutScreen() {
     }
   };
 
-  const handleSave = async () => {
-    setIsSaving(true);
-    setExercises(prev => prev.map(ex => ex.id === expandedId ? { ...ex, reps: editReps, sets: editSets, weight: editWeight } : ex));
-    
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) {
-      const { error } = await supabase.from('exercise_logs').insert({ exercise_id: expandedId, user_id: user.id, sets: editSets, reps: editReps, weight: editWeight });
-      if (!error) {
-        await fetchExercises(); 
-        setExpandedId(null); 
-      }
-    }
-    setIsSaving(false);
+  const handleSave = () => {
+    // Niente più caricamenti! Aggiorna solo la grafica istantaneamente.
+    setExercises(prev => prev.map(ex => 
+      ex.id === expandedId 
+        ? { ...ex, reps: editReps, sets: editSets, weight: editWeight } 
+        : ex
+    ));
+    setExpandedId(null); // Chiude la tendina
   };
 
   const handleFinishWorkout = async () => {
     if (isWorkoutFinished) return;
     setIsSaving(true);
+    
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
+      
+      // 1. PREPARA TUTTI GLI ESERCIZI (SIA QUELLI MODIFICATI CHE QUELLI BASE)
+      const logsToInsert = exercises.map(ex => ({
+        exercise_id: ex.id,
+        user_id: user.id,
+        sets: ex.sets,
+        reps: ex.reps,
+        weight: ex.weight
+      }));
+
+      // 2. SPARA TUTTO NEL DATABASE IN UN SOLO COLPO! (Bulk Insert)
+      if (logsToInsert.length > 0) {
+        await supabase.from('exercise_logs').insert(logsToInsert);
+      }
+
+      // 3. REGISTRA IL COMPLETAMENTO DELLA SCHEDA
       const { error } = await supabase.from('workout_sessions').insert({ user_id: user.id, workout_id: id });
+      
       if (!error) {
         setIsWorkoutFinished(true);
-        await fetchWeeklyChart(); 
+        await fetchWeeklyChart(); // Aggiorna il grafico a barre
       }
     }
     setIsSaving(false);
@@ -336,18 +349,37 @@ export default function WorkoutScreen() {
         keyExtractor={(item) => item.id}
         renderItem={renderExerciseItem}
         ListHeaderComponent={renderHeader}
-        ListFooterComponent={renderFooter}
-        contentContainerStyle={{ paddingBottom: 40 }}
-        style={{ paddingHorizontal: 20 }}
+        ListFooterComponent={
+            <View style={styles.chartContainer}>
+                {weeklyChart.map((data, index) => (
+                    <View key={index} style={styles.barColumn}><View style={styles.barBackground}><View style={[styles.barFill, { height: `${data.value}%` }]} /></View><Text style={styles.barLabel}>{data.day}</Text></View>
+                ))}
+            </View>
+        }
+        contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 50 }}
         showsVerticalScrollIndicator={false}
       />
 
-      <Modal visible={isHistoryModalVisible} animationType="slide" transparent={true} onRequestClose={() => setIsHistoryModalVisible(false)}>
+      {/* 🛡️ LO SCUDO INVISIBILE PER LO SLIDE 🛡️ */}
+      <View 
+        style={{ 
+          position: 'absolute', 
+          top: 0, 
+          bottom: 0, 
+          left: 0, 
+          width: 20, // Copre esattamente i 20 pixel di margine vuoto
+          zIndex: 999 
+        }} 
+      />
+
+      <Modal visible={isHistoryModalVisible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Full History</Text>
-              <TouchableOpacity onPress={() => setIsHistoryModalVisible(false)}><Ionicons name="close-circle" size={32} color={Colors.text} /></TouchableOpacity>
+              <Text style={styles.modalTitle}>History</Text>
+              <TouchableOpacity onPress={() => setIsHistoryModalVisible(false)}>
+                <Ionicons name="close-circle" size={32} color={Colors.text} />
+              </TouchableOpacity>
             </View>
             {fullHistory.length === 0 ? (
               <Text style={{ textAlign: 'center', color: Colors.secondary, marginTop: 20 }}>No records found.</Text>
@@ -355,17 +387,17 @@ export default function WorkoutScreen() {
               <FlatList
                 data={fullHistory}
                 keyExtractor={(item) => item.id}
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={{ paddingBottom: 20 }}
                 renderItem={({ item }) => {
-                  const dateObj = new Date(item.created_at);
+                  const d = new Date(item.created_at);
                   return (
                     <View style={styles.historyRow}>
                       <View>
-                        <Text style={styles.historyRowDate}>{`${dateObj.getDate()}/${dateObj.getMonth() + 1}/${dateObj.getFullYear()}`}</Text>
-                        <Text style={styles.historyRowDetails}>{item.sets} Sets x {item.reps} Reps  <Text style={{color: Colors.primary}}>@ {item.weight}kg</Text></Text>
+                        <Text style={styles.historyRowDate}>{`${d.getDate()}/${d.getMonth()+1}/${d.getFullYear()}`}</Text>
+                        <Text style={styles.historyRowDetails}>{item.sets}x{item.reps} @ <Text style={{color: Colors.primary}}>{item.weight}kg</Text></Text>
                       </View>
-                      <TouchableOpacity onPress={() => handleDeleteLog(item.id)} style={styles.deleteBtn}><Ionicons name="trash" size={24} color="#FF3B30" /></TouchableOpacity>
+                      <TouchableOpacity onPress={() => handleDeleteLog(item.id)} style={styles.deleteBtn}>
+                        <Ionicons name="trash" size={24} color="#FF3B30" />
+                      </TouchableOpacity>
                     </View>
                   );
                 }}
@@ -374,7 +406,6 @@ export default function WorkoutScreen() {
           </View>
         </View>
       </Modal>
-
     </SafeAreaView>
   );
 }
