@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Alert, ActivityIndicator, Modal, FlatList } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, Alert, ActivityIndicator, Modal, FlatList, TextInput } from 'react-native';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -7,7 +7,6 @@ import { Colors } from '../../constants/Colors';
 import { supabase } from '../../lib/supabase';
 import DraggableFlatList, { ScaleDecorator } from 'react-native-draggable-flatlist';
 
-// FUNZIONE PER TROVARE IL LUNEDÌ
 const getStartOfCurrentWeek = () => {
   const today = new Date();
   const dayOfWeek = today.getDay();
@@ -33,6 +32,9 @@ export default function WorkoutScreen() {
   const [editReps, setEditReps] = useState(0);
   const [editSets, setEditSets] = useState(0);
   const [editWeight, setEditWeight] = useState(0);
+  // --- NUOVI STATI PER BOTTONI E NOTE ---
+  const [editSetType, setEditSetType] = useState<string | null>(null);
+  const [editNotes, setEditNotes] = useState('');
 
   const [exerciseHistory, setExerciseHistory] = useState<any[]>([]);
   const [isHistoryModalVisible, setIsHistoryModalVisible] = useState(false);
@@ -66,8 +68,6 @@ export default function WorkoutScreen() {
   const fetchWeeklyChart = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
-
-    // ORA USA IL LUNEDÌ COME FILTRO
     const startOfWeek = getStartOfCurrentWeek();
     const { data } = await supabase.from('workout_sessions').select('created_at').eq('user_id', user.id).gte('created_at', startOfWeek.toISOString());
 
@@ -103,6 +103,8 @@ export default function WorkoutScreen() {
           sets: latestLog ? latestLog.sets : ex.default_sets,
           reps: latestLog ? latestLog.reps : ex.default_reps,
           weight: latestLog ? latestLog.weight : ex.default_weight,
+          set_type: latestLog ? latestLog.set_type : null, // Aggiunto
+          notes: latestLog ? latestLog.notes : '',         // Aggiunto
           order_index: ex.order_index || 0
         };
       });
@@ -119,23 +121,51 @@ export default function WorkoutScreen() {
     setEditReps(exercise.reps);
     setEditSets(exercise.sets);
     setEditWeight(exercise.weight);
+    setEditSetType(exercise.set_type || null); // Carica il bottone
+    setEditNotes(exercise.notes || '');        // Carica la nota
     setExerciseHistory([]); 
 
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
-      const { data } = await supabase.from('exercise_logs').select('id, weight, sets, reps, created_at').eq('exercise_id', exercise.id).eq('user_id', user.id).order('created_at', { ascending: false }).limit(7);
+      const { data } = await supabase.from('exercise_logs').select('id, weight, sets, reps, set_type, notes, created_at').eq('exercise_id', exercise.id).eq('user_id', user.id).order('created_at', { ascending: false }).limit(7);
       if (data) setExerciseHistory(data.reverse());
     }
   };
 
-  const handleSave = () => {
-    // Niente più caricamenti! Aggiorna solo la grafica istantaneamente.
+  const handleSave = async () => {
     setExercises(prev => prev.map(ex => 
       ex.id === expandedId 
-        ? { ...ex, reps: editReps, sets: editSets, weight: editWeight } 
+        ? { ...ex, reps: editReps, sets: editSets, weight: editWeight, set_type: editSetType, notes: editNotes } 
         : ex
     ));
-    setExpandedId(null); // Chiude la tendina
+    
+    const currentExerciseId = expandedId;
+    setExpandedId(null); 
+
+    if (currentExerciseId) {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+
+        const { data: existingLogs } = await supabase
+          .from('exercise_logs')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('exercise_id', currentExerciseId)
+          .gte('created_at', todayStart.toISOString());
+
+        if (existingLogs && existingLogs.length > 0) {
+          await supabase.from('exercise_logs').update({ 
+            sets: editSets, reps: editReps, weight: editWeight, set_type: editSetType, notes: editNotes 
+          }).eq('id', existingLogs[0].id);
+        } else {
+          await supabase.from('exercise_logs').insert({
+            user_id: user.id, exercise_id: currentExerciseId, sets: editSets, reps: editReps, weight: editWeight, set_type: editSetType, notes: editNotes
+          });
+        }
+      }
+    }
   };
 
   const handleFinishWorkout = async () => {
@@ -144,27 +174,29 @@ export default function WorkoutScreen() {
     
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
-      
-      // 1. PREPARA TUTTI GLI ESERCIZI (SIA QUELLI MODIFICATI CHE QUELLI BASE)
-      const logsToInsert = exercises.map(ex => ({
-        exercise_id: ex.id,
-        user_id: user.id,
-        sets: ex.sets,
-        reps: ex.reps,
-        weight: ex.weight
-      }));
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
 
-      // 2. SPARA TUTTO NEL DATABASE IN UN SOLO COLPO! (Bulk Insert)
-      if (logsToInsert.length > 0) {
-        await supabase.from('exercise_logs').insert(logsToInsert);
+      for (const ex of exercises) {
+         const { data: existingLogs } = await supabase
+          .from('exercise_logs')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('exercise_id', ex.id)
+          .gte('created_at', todayStart.toISOString());
+
+         if (!existingLogs || existingLogs.length === 0) {
+            await supabase.from('exercise_logs').insert({
+              user_id: user.id, exercise_id: ex.id, sets: ex.sets, reps: ex.reps, weight: ex.weight, set_type: ex.set_type, notes: ex.notes
+            });
+         }
       }
 
-      // 3. REGISTRA IL COMPLETAMENTO DELLA SCHEDA
       const { error } = await supabase.from('workout_sessions').insert({ user_id: user.id, workout_id: id });
       
       if (!error) {
         setIsWorkoutFinished(true);
-        await fetchWeeklyChart(); // Aggiorna il grafico a barre
+        await fetchWeeklyChart(); 
       }
     }
     setIsSaving(false);
@@ -181,7 +213,7 @@ export default function WorkoutScreen() {
     setIsHistoryModalVisible(true);
     const { data: { user } } = await supabase.auth.getUser();
     if (user && expandedId) {
-      const { data } = await supabase.from('exercise_logs').select('id, weight, sets, reps, created_at').eq('exercise_id', expandedId).eq('user_id', user.id).order('created_at', { ascending: false });
+      const { data } = await supabase.from('exercise_logs').select('id, weight, sets, reps, set_type, notes, created_at').eq('exercise_id', expandedId).eq('user_id', user.id).order('created_at', { ascending: false });
       if (data) setFullHistory(data);
     }
   };
@@ -221,7 +253,7 @@ export default function WorkoutScreen() {
                 <Ionicons name="reorder-two" size={30} color={Colors.secondary} style={{ marginRight: 10 }} />
                 <View>
                   <Text style={styles.exerciseName}>{item.name}</Text>
-                  <Text style={styles.exerciseDetails}>{item.sets}x{item.reps} {item.weight}kg</Text>
+                  <Text style={styles.exerciseDetails}>{item.sets}x{item.reps} {item.weight}kg {item.set_type ? `• ${item.set_type}` : ''}</Text>
                 </View>
               </View>
               <View style={styles.addButton}><Ionicons name="add" size={32} color={Colors.primary} /></View>
@@ -229,7 +261,6 @@ export default function WorkoutScreen() {
           ) : (
              <View style={styles.cardExpandedContent}>
              
-             {/* HEADER CLICCABILE PER CHIUDERE */}
              <View style={styles.expandedHeader}>
                <TouchableOpacity onPress={() => setExpandedId(null)} style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
                  <Ionicons name="chevron-up" size={26} color={Colors.background} style={{ marginRight: 10 }} />
@@ -267,6 +298,28 @@ export default function WorkoutScreen() {
                </View>
              </View>
 
+             {/* --- NUOVI BOTTONI INTENSITA' E NOTE --- */}
+             <View style={styles.intensityContainer}>
+                {['Cedimento', 'Buffer', 'Drop Set'].map(type => (
+                  <TouchableOpacity
+                    key={type}
+                    style={[styles.typeButton, editSetType === type && styles.typeButtonActive]}
+                    onPress={() => setEditSetType(editSetType === type ? null : type)}
+                  >
+                    <Text style={[styles.typeButtonText, editSetType === type && styles.typeButtonTextActive]}>{type}</Text>
+                  </TouchableOpacity>
+                ))}
+             </View>
+
+             <TextInput
+                style={styles.notesInput}
+                placeholder="Aggiungi note... (es. buco 3, panca 30°)"
+                placeholderTextColor="rgba(255,255,255,0.4)"
+                value={editNotes}
+                onChangeText={setEditNotes}
+                multiline
+             />
+
              <TouchableOpacity style={styles.blackChartBox} onPress={openHistoryModal} activeOpacity={0.8}>
                {exerciseHistory.length === 0 ? (
                  <Text style={{color: Colors.secondary, textAlign: 'center', marginTop: 60}}>No records yet.</Text>
@@ -297,16 +350,9 @@ export default function WorkoutScreen() {
   const renderHeader = () => (
     <View>
       <View style={styles.header}>
-        
-        {/* --- ECCO LA FRECCIA INDIETRO SALVAVITA --- */}
-        <TouchableOpacity 
-          onPress={() => router.back()} 
-          style={{ marginRight: 15, padding: 5, justifyContent: 'center' }}
-        >
+        <TouchableOpacity onPress={() => router.back()} style={{ marginRight: 15, padding: 5, justifyContent: 'center' }}>
           <Ionicons name="chevron-back" size={32} color={Colors.text} />
         </TouchableOpacity>
-        {/* ----------------------------------------- */}
-
         <Image source={imageToShow} style={styles.avatar} />
         <View>
           <Text style={styles.greeting}>Hi, {userName}</Text>
@@ -326,14 +372,6 @@ export default function WorkoutScreen() {
           </TouchableOpacity>
         </View>
       </View>
-    </View>
-  );
-
-  const renderFooter = () => (
-    <View style={styles.chartContainer}>
-      {weeklyChart.map((data, index) => (
-        <View key={index} style={styles.barColumn}><View style={styles.barBackground}><View style={[styles.barFill, { height: `${data.value}%` }]} /></View><Text style={styles.barLabel}>{data.day}</Text></View>
-      ))}
     </View>
   );
 
@@ -360,18 +398,9 @@ export default function WorkoutScreen() {
         showsVerticalScrollIndicator={false}
       />
 
-      {/* 🛡️ LO SCUDO INVISIBILE PER LO SLIDE 🛡️ */}
-      <View 
-        style={{ 
-          position: 'absolute', 
-          top: 0, 
-          bottom: 0, 
-          left: 0, 
-          width: 20, // Copre esattamente i 20 pixel di margine vuoto
-          zIndex: 999 
-        }} 
-      />
+      <View style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: 20, zIndex: 999 }} />
 
+      {/* --- MODALE HISTORY AGGIORNATO CON NOTE E TIPO SERIE --- */}
       <Modal visible={isHistoryModalVisible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -391,9 +420,13 @@ export default function WorkoutScreen() {
                   const d = new Date(item.created_at);
                   return (
                     <View style={styles.historyRow}>
-                      <View>
-                        <Text style={styles.historyRowDate}>{`${d.getDate()}/${d.getMonth()+1}/${d.getFullYear()}`}</Text>
+                      <View style={{ flex: 1, paddingRight: 10 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                          <Text style={styles.historyRowDate}>{`${d.getDate()}/${d.getMonth()+1}/${d.getFullYear()}`}</Text>
+                          {item.set_type && <View style={styles.historyBadge}><Text style={styles.historyBadgeText}>{item.set_type}</Text></View>}
+                        </View>
                         <Text style={styles.historyRowDetails}>{item.sets}x{item.reps} @ <Text style={{color: Colors.primary}}>{item.weight}kg</Text></Text>
+                        {item.notes ? <Text style={styles.historyRowNotes}>"{item.notes}"</Text> : null}
                       </View>
                       <TouchableOpacity onPress={() => handleDeleteLog(item.id)} style={styles.deleteBtn}>
                         <Ionicons name="trash" size={24} color="#FF3B30" />
@@ -436,11 +469,22 @@ const styles = StyleSheet.create({
   exerciseNameExpanded: { color: Colors.background, fontSize: 24, fontWeight: 'bold' },
   saveButton: { backgroundColor: Colors.background, paddingVertical: 10, paddingHorizontal: 25, borderRadius: 20 },
   saveButtonText: { color: Colors.primary, fontSize: 16, fontWeight: 'bold' },
-  controlsContainer: { marginBottom: 20, paddingHorizontal: 10 },
+  controlsContainer: { marginBottom: 15, paddingHorizontal: 10 },
   controlRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
   controlLabel: { fontSize: 22, fontWeight: '500', color: Colors.background },
   controlButtons: { flexDirection: 'row', alignItems: 'center', width: 150, justifyContent: 'space-between' },
   controlValue: { fontSize: 28, fontWeight: 'bold', color: Colors.background, width: 50, textAlign: 'center' },
+  
+  // --- STILI NUOVI: BOTTONI INTENSITA E NOTE ---
+  intensityContainer: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15, marginHorizontal: 10 },
+  typeButton: { flex: 1, paddingVertical: 10, marginHorizontal: 4, borderRadius: 15, borderWidth: 1, borderColor: Colors.secondary, backgroundColor: 'rgba(0,0,0,0.3)', alignItems: 'center' },
+  typeButtonActive: { backgroundColor: Colors.background, borderColor: Colors.background },
+  typeButtonText: { color: Colors.text, fontSize: 12, fontWeight: 'bold' },
+  typeButtonTextActive: { color: Colors.primary },
+  notesInput: { backgroundColor: 'rgba(0,0,0,0.2)', color: Colors.background, padding: 15, borderRadius: 15, fontSize: 14, minHeight: 80, textAlignVertical: 'top', marginBottom: 25, marginHorizontal: 10 },
+
+
+  
   blackChartBox: { backgroundColor: Colors.background, height: 180, borderRadius: 20, width: '100%', padding: 15, position: 'relative' },
   historyChartContainer: { flex: 1, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-around', paddingTop: 10 },
   historyBarColumn: { alignItems: 'center', width: 35 },
@@ -462,7 +506,10 @@ const styles = StyleSheet.create({
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 25 },
   modalTitle: { fontSize: 24, fontWeight: 'bold', color: Colors.text },
   historyRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: Colors.background, padding: 15, borderRadius: 20, marginBottom: 12 },
-  historyRowDate: { fontSize: 12, color: Colors.secondary, marginBottom: 4, fontWeight: '600' },
+  historyRowDate: { fontSize: 12, color: Colors.secondary, fontWeight: '600' },
+  historyBadge: { backgroundColor: 'rgba(208, 253, 62, 0.2)', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, marginLeft: 10 },
+  historyBadgeText: { color: Colors.primary, fontSize: 10, fontWeight: 'bold' },
   historyRowDetails: { fontSize: 18, fontWeight: 'bold', color: Colors.text },
+  historyRowNotes: { fontSize: 14, color: Colors.secondary, marginTop: 5, fontStyle: 'italic' },
   deleteBtn: { padding: 10, backgroundColor: '#FF3B3020', borderRadius: 15 },
 });

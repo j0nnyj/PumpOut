@@ -8,10 +8,11 @@ import { supabase } from '../lib/supabase';
 
 export default function FriendWorkoutScreen() {
   const router = useRouter();
-  const { workoutId, friendName, avatarUrl } = useLocalSearchParams(); 
+  // Assicurati che i parametri in ingresso siano corretti rispetto a come li passi dal feed social
+  const { workoutId, friendName, avatarUrl, friendId } = useLocalSearchParams(); 
 
   const [loading, setLoading] = useState(true);
-  const [isDuplicating, setIsDuplicating] = useState(false); // <-- Stato per il caricamento del furto!
+  const [isDuplicating, setIsDuplicating] = useState(false);
   
   const [workoutData, setWorkoutData] = useState<any>(null);
   const [exercises, setExercises] = useState<any[]>([]);
@@ -23,6 +24,7 @@ export default function FriendWorkoutScreen() {
   const fetchFriendWorkout = async () => {
     setLoading(true);
     
+    // 1. Scarica i dettagli base della scheda
     const { data: workout } = await supabase
       .from('workouts')
       .select('*')
@@ -31,12 +33,57 @@ export default function FriendWorkoutScreen() {
       
     if (workout) setWorkoutData(workout);
 
+    // 🔥 LA MOSSA GENIALE: L'ID dell'amico ce l'abbiamo già qui, dentro la scheda!
+    const realFriendId = workout?.user_id || friendId;
+
+    // 2. Scarica la lista degli esercizi
     const { data: exData } = await supabase
       .from('exercises')
       .select('*')
-      .eq('workout_id', workoutId);
+      .eq('workout_id', workoutId)
+      .order('order_index', { ascending: true });
 
-    if (exData) setExercises(exData);
+    if (exData) {
+       let logsData = null;
+
+       // 3. Peschiamo i suoi veri logs usando l'ID estratto dalla scheda
+       if (realFriendId) {
+         const exerciseIds = exData.map(ex => ex.id);
+         const { data: fetchedLogs } = await supabase
+            .from('exercise_logs')
+            .select('*')
+            .eq('user_id', realFriendId)
+            .in('exercise_id', exerciseIds)
+            .order('created_at', { ascending: false });
+            
+         logsData = fetchedLogs;
+       }
+
+       // 4. UNIFICHIAMO I DATI (A prova di bomba)
+       const formattedData = exData.map(ex => {
+         const latestLog = logsData?.find((log: any) => log.exercise_id === ex.id);
+         
+         const finalSets = latestLog ? latestLog.sets : (ex.default_sets || 0);
+         const finalReps = latestLog ? latestLog.reps : (ex.default_reps || 0);
+         const finalWeight = latestLog ? latestLog.weight : (ex.default_weight || 0);
+
+         return {
+           id: ex.id,
+           name: ex.name,
+           // Li mappiamo con entrambi i nomi, così la grafica li trova SEMPRE!
+           sets: finalSets,
+           reps: finalReps,
+           weight: finalWeight,
+           default_sets: finalSets,
+           default_reps: finalReps,
+           default_weight: finalWeight,
+           set_type: latestLog ? latestLog.set_type : null, 
+           notes: latestLog ? latestLog.notes : '',
+         };
+       });
+       
+       setExercises(formattedData);
+    }
     
     setLoading(false);
   };
@@ -45,7 +92,7 @@ export default function FriendWorkoutScreen() {
   const handleStealWorkout = async () => {
     Alert.alert(
       "Steal Workout 🥷",
-      `Vuoi copiare la scheda "${workoutData?.title}" di ${friendName} nei tuoi allenamenti?`,
+      `Vuoi copiare la scheda "${workoutData?.title}" nei tuoi allenamenti?`,
       [
         { text: "Annulla", style: "cancel" },
         { 
@@ -57,25 +104,44 @@ export default function FriendWorkoutScreen() {
               const { data: { user } } = await supabase.auth.getUser();
               if (!user) throw new Error("Utente non trovato");
 
-              // 1. Troviamo la tua prima categoria disponibile per appoggiarci il workout
-              const { data: myCategories } = await supabase
+              // 1. Trova o crea una categoria "Stolen Workouts" (Più ordinato!)
+              let myCategoryId;
+              const { data: categoryCheck } = await supabase
                 .from('categories')
                 .select('id')
                 .eq('user_id', user.id)
+                .ilike('name', 'Stolen%') // Cerca se hai già una categoria che inizia con "Stolen"
                 .limit(1);
 
-              if (!myCategories || myCategories.length === 0) {
-                Alert.alert("Errore", "Non hai nessuna categoria. Creane una prima!");
-                setIsDuplicating(false);
-                return;
+              if (categoryCheck && categoryCheck.length > 0) {
+                 myCategoryId = categoryCheck[0].id;
+              } else {
+                 // Se non ce l'ha, gliela creiamo noi al volo
+                 const { data: newCat } = await supabase.from('categories').insert({
+                    user_id: user.id,
+                    name: "Stolen Workouts 🥷",
+                    image_url: "https://images.unsplash.com/photo-1599058917212-d750089bc07e?q=80&w=2069&auto=format&fit=crop"
+                 }).select().single();
+                 myCategoryId = newCat?.id;
               }
-              const myCategoryId = myCategories[0].id;
+
+              if(!myCategoryId) {
+                 // Estremo fallback: prendi la prima categoria che capita
+                 const { data: anyCat } = await supabase.from('categories').select('id').eq('user_id', user.id).limit(1);
+                 myCategoryId = anyCat?.[0]?.id;
+              }
+
+              if (!myCategoryId) {
+                 Alert.alert("Errore", "Impossibile trovare o creare una categoria per salvare la scheda.");
+                 setIsDuplicating(false);
+                 return;
+              }
 
               // 2. Creiamo il nuovo Workout per TE
               const { data: newWorkout, error: workoutError } = await supabase
                 .from('workouts')
                 .insert({
-                  title: `${workoutData.title} (by ${friendName})`, // Aggiungiamo un tag per ricordarci di chi era!
+                  title: `${workoutData.title} (by ${friendName})`,
                   image_url: workoutData.image_url,
                   category_id: myCategoryId,
                   user_id: user.id
@@ -85,23 +151,26 @@ export default function FriendWorkoutScreen() {
 
               if (workoutError || !newWorkout) throw workoutError;
 
-              // 3. Copiamo tutti gli esercizi dentro il tuo nuovo workout
+              // 3. Copiamo tutti gli esercizi (prendendo i kg e le rep attuali) dentro il tuo nuovo workout
               if (exercises.length > 0) {
-                const exercisesToInsert = exercises.map(ex => ({
+                const exercisesToInsert = exercises.map((ex, index) => ({
                   workout_id: newWorkout.id,
                   name: ex.name,
-                  default_sets: ex.default_sets,
-                  default_reps: ex.default_reps,
-                  default_weight: ex.default_weight
+                  default_sets: ex.sets,       // Usiamo i valori "veri" dell'amico come base di partenza per te
+                  default_reps: ex.reps,
+                  default_weight: ex.weight,
+                  order_index: index
                 }));
 
                 const { error: exError } = await supabase.from('exercises').insert(exercisesToInsert);
                 if (exError) throw exError;
               }
 
-              // 4. Successo! Ti riportiamo alla Home per farti vedere il bottino
               Alert.alert("Fatto! 🎉", "Il workout è ora nella tua Home!");
-              router.navigate('/(tabs)/home');
+              router.navigate({
+                  pathname: '/(tabs)/home',
+                  params: { restoreCategory: myCategoryId }
+              });
 
             } catch (error) {
               Alert.alert("Errore", "Impossibile copiare il workout.");
@@ -135,7 +204,7 @@ export default function FriendWorkoutScreen() {
         <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 100 }}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 120 }}>
         
         {workoutData?.image_url && (
           <Image source={{ uri: workoutData.image_url }} style={styles.coverImage} />
@@ -154,23 +223,41 @@ export default function FriendWorkoutScreen() {
           ) : (
             exercises.map((exercise, index) => (
               <View key={index} style={styles.exerciseCard}>
+                
+                {/* INTESTAZIONE CON BADGE INTENSITA' */}
                 <View style={styles.exerciseHeader}>
                   <Text style={styles.exerciseName}>{exercise.name}</Text>
+                  {exercise.set_type && (
+                     <View style={styles.typeBadge}>
+                       <Text style={styles.typeBadgeText}>{exercise.set_type}</Text>
+                     </View>
+                  )}
                 </View>
+
+                {/* STATISTICHE (I veri kg del tuo amico) */}
                 <View style={styles.exerciseDetailsRow}>
                   <View style={styles.detailBox}>
                     <Text style={styles.detailLabel}>SETS</Text>
-                    <Text style={styles.detailValue}>{exercise.default_sets}</Text>
+                    <Text style={styles.detailValue}>{exercise.sets}</Text>
                   </View>
                   <View style={styles.detailBox}>
                     <Text style={styles.detailLabel}>REPS</Text>
-                    <Text style={styles.detailValue}>{exercise.default_reps}</Text>
+                    <Text style={styles.detailValue}>{exercise.reps}</Text>
                   </View>
                   <View style={styles.detailBox}>
                     <Text style={styles.detailLabel}>WEIGHT</Text>
-                    <Text style={styles.detailValue}>{exercise.default_weight} kg</Text>
+                    <Text style={styles.detailValue}>{exercise.weight} kg</Text>
                   </View>
                 </View>
+
+                {/* LE SUE NOTE SEGRETE */}
+                {exercise.notes ? (
+                  <View style={styles.notesContainer}>
+                    <Ionicons name="document-text-outline" size={16} color={Colors.secondary} style={{ marginRight: 6, marginTop: 2 }} />
+                    <Text style={styles.notesText}>"{exercise.notes}"</Text>
+                  </View>
+                ) : null}
+
               </View>
             ))
           )}
@@ -217,15 +304,20 @@ const styles = StyleSheet.create({
 
   exerciseList: { paddingHorizontal: 20 },
   exerciseCard: { backgroundColor: Colors.cardBackground, borderRadius: 20, padding: 20, marginBottom: 15, borderWidth: 1, borderColor: '#333' },
-  exerciseHeader: { borderBottomWidth: 1, borderBottomColor: '#333', paddingBottom: 15, marginBottom: 15 },
-  exerciseName: { color: Colors.text, fontSize: 22, fontWeight: 'bold' },
+  exerciseHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#333', paddingBottom: 15, marginBottom: 15 },
+  exerciseName: { color: Colors.text, fontSize: 22, fontWeight: 'bold', flex: 1 },
   
+  typeBadge: { backgroundColor: 'rgba(208, 253, 62, 0.15)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, marginLeft: 10 },
+  typeBadgeText: { color: Colors.primary, fontSize: 12, fontWeight: 'bold' },
+
   exerciseDetailsRow: { flexDirection: 'row', justifyContent: 'space-between' },
   detailBox: { alignItems: 'center', flex: 1 },
   detailLabel: { color: Colors.secondary, fontSize: 12, fontWeight: 'bold', marginBottom: 5 },
   detailValue: { color: Colors.primary, fontSize: 24, fontWeight: 'bold' },
 
-  // Stile per la barra in basso
+  notesContainer: { flexDirection: 'row', backgroundColor: 'rgba(0,0,0,0.3)', padding: 10, borderRadius: 10, marginTop: 15, alignItems: 'flex-start' },
+  notesText: { color: Colors.secondary, fontSize: 14, fontStyle: 'italic', flex: 1, lineHeight: 20 },
+
   footer: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 20, backgroundColor: Colors.background, borderTopWidth: 1, borderTopColor: '#333' },
   stealButton: { backgroundColor: Colors.primary, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingVertical: 18, borderRadius: 30 },
   stealButtonText: { color: Colors.background, fontSize: 18, fontWeight: 'bold' }
